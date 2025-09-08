@@ -39,5 +39,5 @@ group :development, :test do
 end
 
 gem "redis", "~> 5.4"
-gem "factory_bot_rails", "~> 6.4"
+gem "factory_bot_rails", "~> 6.5"
 gem "rspec-rails", "~> 8.0"
