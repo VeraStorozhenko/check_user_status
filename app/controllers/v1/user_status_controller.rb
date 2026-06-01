@@ -1,10 +1,17 @@
 module V1
   class UserStatusController < ApplicationController
     def check
-      user = User.find_or_create_by(idfa: params[:idfa])
-      result = CheckUserStatusService.new(user: user, request: request).call
-      IntegrityLoggerService.new(user: user, status: status, source: 'api').call
-      render json: { ban_status: result }
+      if params[:idfa].blank?
+        return render json: { error: "idfa parameter is required" }, status: :unprocessable_entity
+      end
+
+      result = CheckUserStatusService.new(
+        idfa: params[:idfa],
+        rooted_device: params[:rooted_device],
+        request: request
+      ).call
+
+      render json: { ban_status: result }, status: :ok
     end
   end
 end

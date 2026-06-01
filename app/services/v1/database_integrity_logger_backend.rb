@@ -13,4 +13,3 @@ class V1::DatabaseIntegrityLoggerBackend
     )
   end
 end
-

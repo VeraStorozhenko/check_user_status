@@ -1,58 +1,162 @@
 require 'rails_helper'
 
-RSpec.describe V1::CheckUserStatusService do
-  let(:user) { User.create!(idfa: "test-idfa") }
+RSpec.describe CheckUserStatusService, type: :service do
+  let(:idfa) { "test-idfa-12345" }
+  let(:rooted_device) { false }
+  let(:vpn_api_service) { class_double(V1::VpnApiService) }
+  let(:vpn_api_response) { { security: { vpn: false, proxy: false, tor: false } } }
+  let(:vpn_check) { instance_double(V1::VpnApiService, call: vpn_api_response) }
   let(:request) do
-    instance_double("ActionDispatch::Request",
+    instance_double(
+      "ActionDispatch::Request",
       remote_ip: "8.8.8.8",
-      headers: { "CF-IPCountry" => "US" },
-      params: { "rooted_device" => false }
+      headers: { "CF-IPCountry" => "US" }
     )
   end
 
-  subject { described_class.new(user: user, request: request) }
+  subject(:service) do
+    described_class.new(
+      idfa: idfa,
+      rooted_device: rooted_device,
+      request: request,
+      vpn_api_service: vpn_api_service
+    )
+  end
 
   before do
-    $redis = Redis.new
+    $redis.flushdb
     $redis.sadd("country_whitelist", "US")
+    allow(vpn_api_service).to receive(:new).with("8.8.8.8").and_return(vpn_check)
   end
 
-  it "returns not_banned if all checks pass" do
-    allow(request).to receive(:headers).and_return({ "security" => { "vpn" => false, "proxy" => false }} )
+  describe '#call' do
+    context 'when all checks pass' do
+      it 'returns not_banned, creates the user, and writes an integrity log' do
+        expect {
+          expect(service.call).to eq("not_banned")
+        }.to change(User, :count).by(1).and change(IntegrityLog, :count).by(1)
 
-    result = subject.call
-    expect(result).to eq("not_banned")
-  end
+        expect(User.last.ban_status).to eq("not_banned")
+        expect(IntegrityLog.last).to have_attributes(
+          idfa: idfa,
+          ban_status: "not_banned",
+          ip: "8.8.8.8",
+          country: "US",
+          rooted_device: false,
+          proxy: false,
+          vpn: false
+        )
+      end
+    end
 
-  it "returns banned if country is not whitelisted" do
-    allow(request).to receive(:headers).and_return({ "CF-IPCountry" => "RU" })
+    context 'when the Cloudflare country is not whitelisted' do
+      let(:request) do
+        instance_double(
+          "ActionDispatch::Request",
+          remote_ip: "8.8.8.8",
+          headers: { "CF-IPCountry" => "RU" }
+        )
+      end
 
-    result = subject.call
-    expect(result).to eq("banned")
-  end
+      it 'bans the user without calling VPNAPI' do
+        expect(vpn_api_service).not_to receive(:new)
 
-  it "returns banned if rooted_device is true" do
-    allow(request).to receive(:params).and_return({ "rooted_device" => true })
+        expect {
+          expect(service.call).to eq("banned")
+        }.to change(User, :count).by(1).and change(IntegrityLog, :count).by(1)
 
-    result = subject.call
-    expect(result).to eq("banned")
-  end
+        expect(User.last.ban_status).to eq("banned")
+      end
+    end
 
-  it "returns banned if VPN is detected" do
-    fake_vpn_info = {
-      "security" => {
-        "vpn" => true,
-        "proxy" => false
-      }
-    }
+    context 'when the Cloudflare country header is missing' do
+      let(:request) do
+        instance_double(
+          "ActionDispatch::Request",
+          remote_ip: "8.8.8.8",
+          headers: {}
+        )
+      end
 
-    vpn_api_service_double = instance_double(V1::VpnApiService, call: {
-      "security" => { "vpn" => true, "proxy" => true }
-    })
-    allow(V1::VpnApiService).to receive(:new).with(anything).and_return(vpn_api_service_double)
+      it 'bans the user' do
+        expect(service.call).to eq("banned")
+        expect(User.last.ban_status).to eq("banned")
+      end
+    end
 
-    result = subject.call
+    context 'when the device is rooted' do
+      let(:rooted_device) { "true" }
 
-    expect(result).to eq("banned")
+      it 'bans the user without calling VPNAPI' do
+        expect(vpn_api_service).not_to receive(:new)
+
+        expect {
+          expect(service.call).to eq("banned")
+        }.to change(User, :count).by(1).and change(IntegrityLog, :count).by(1)
+
+        expect(IntegrityLog.last.rooted_device).to eq(true)
+      end
+    end
+
+    context 'when VPNAPI detects a VPN' do
+      let(:vpn_api_response) { { security: { vpn: true, proxy: false, tor: false } } }
+
+      it 'bans the user and records the VPN flag' do
+        expect(service.call).to eq("banned")
+        expect(IntegrityLog.last.vpn).to eq(true)
+      end
+    end
+
+    context 'when VPNAPI detects a proxy' do
+      let(:vpn_api_response) { { security: { vpn: false, proxy: true, tor: false } } }
+
+      it 'bans the user and records the proxy flag' do
+        expect(service.call).to eq("banned")
+        expect(IntegrityLog.last.proxy).to eq(true)
+      end
+    end
+
+    context 'when VPNAPI detects Tor' do
+      let(:vpn_api_response) { { security: { vpn: false, proxy: false, tor: true } } }
+
+      it 'bans the user' do
+        expect(service.call).to eq("banned")
+      end
+    end
+
+    context 'when the user is already banned' do
+      it 'returns banned and skips the check chain and duplicate log' do
+        User.create!(idfa: idfa, ban_status: "banned")
+        expect(vpn_api_service).not_to receive(:new)
+
+        expect {
+          expect(service.call).to eq("banned")
+        }.not_to change(IntegrityLog, :count)
+      end
+    end
+
+    context 'when an existing not_banned user returns' do
+      it 're-runs checks and logs only if status changes' do
+        User.create!(idfa: idfa, ban_status: "not_banned")
+
+        expect {
+          expect(service.call).to eq("not_banned")
+        }.not_to change(IntegrityLog, :count)
+      end
+
+      context 'and now fails a check' do
+        let(:vpn_api_response) { { security: { vpn: true, proxy: false, tor: false } } }
+
+        it 'updates the user and logs the status change' do
+          User.create!(idfa: idfa, ban_status: "not_banned")
+
+          expect {
+            expect(service.call).to eq("banned")
+          }.to change(IntegrityLog, :count).by(1)
+
+          expect(User.find_by!(idfa: idfa).ban_status).to eq("banned")
+        end
+      end
+    end
   end
 end

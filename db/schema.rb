@@ -16,21 +16,21 @@ ActiveRecord::Schema[7.2].define(version: 2025_05_02_163242) do
 
   create_table "integrity_logs", force: :cascade do |t|
     t.bigint "user_id", null: false
-    t.string "idfa"
-    t.string "ban_status"
+    t.string "idfa", null: false
+    t.string "ban_status", null: false
     t.string "ip"
-    t.boolean "rooted_device"
+    t.boolean "rooted_device", default: false, null: false
     t.string "country"
-    t.boolean "proxy"
-    t.boolean "vpn"
+    t.boolean "proxy", default: false, null: false
+    t.boolean "vpn", default: false, null: false
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
     t.index ["user_id"], name: "index_integrity_logs_on_user_id"
   end
 
   create_table "users", force: :cascade do |t|
-    t.string "idfa"
-    t.string "ban_status"
+    t.string "idfa", null: false
+    t.string "ban_status", default: "not_banned", null: false
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
     t.index ["idfa"], name: "index_users_on_idfa", unique: true

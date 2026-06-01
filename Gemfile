@@ -35,7 +35,7 @@ group :development, :test do
 
   # Omakase Ruby styling [https://github.com/rails/rubocop-rails-omakase/]
   gem "rubocop-rails-omakase", require: false
-  gem 'webmock'
+  gem "webmock"
 end
 
 gem "redis", "~> 5.4"
